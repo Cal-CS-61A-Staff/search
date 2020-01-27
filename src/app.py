@@ -21,7 +21,7 @@ GOOGLE_DOC_EXPORT_TEMPLATE = (
     "https://docs.google.com/document/u/1/export?format=txt&id={}"
 )
 
-CLIENT_NAME = "secure-internal-links"
+CLIENT_NAME = "piazza-search-indexer"
 AUTH_SECRET = os.getenv("AUTH_SECRET")  # needed for 61A Auth
 ACCESS_SECRET = os.getenv("ACCESS_SECRET")  # users need this to access it
 WORKER_SECRET = os.getenv("WORKER_SECRET")  # needed to communicate with the search-worker
@@ -48,7 +48,7 @@ def do(path, data={}):
 def secure(route):
     @functools.wraps(route)
     def wrapped(*args, **kwargs):
-        if request.json["SECRET"] != ACCESS_SECRET:
+        if request.json["secret"] != ACCESS_SECRET:
             abort(401)
         return route(*args, **kwargs)
     return wrapped
@@ -94,7 +94,10 @@ def upload_piazza():
         "staff": False,
     }).json()["feed"]
 
-    course_id = requests.post("https://auth.apps.cs61a.org/piazza/course_id").json()
+    course_id = requests.post("https://auth.apps.cs61a.org/piazza/course_id", json={
+        "client_name": CLIENT_NAME,
+        "secret": AUTH_SECRET,
+    }).json()
 
     do("clear/piazza")
 
@@ -196,8 +199,7 @@ def clear_worker():
 @app.route("/api/index_piazza", methods=["POST"])
 @secure
 def index_piazza():
-    secret = request.json["secret"]
-    upload_piazza(secret)
+    upload_piazza()
     return jsonify({"success": True})
 
 
