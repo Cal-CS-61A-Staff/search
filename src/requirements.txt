@@ -1,6 +1,5 @@
 Flask
 gunicorn
 requests
-piazza-api
 beautifulsoup4
 PyPdf2

@@ -1,4 +1,5 @@
 import functools
+import os
 import re
 import threading
 from io import BytesIO
@@ -8,8 +9,7 @@ import requests
 from PyPDF2 import pdf as pdf_reader
 from PyPDF2.utils import PdfReadError
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, request
-from piazza_api import Piazza
+from flask import Flask, jsonify, request, abort
 
 SITE_DOMAIN = "https://cs61a.org"
 SEARCH_DOMAIN = "https://search-worker.apps.cs61a.org"
@@ -20,6 +20,11 @@ GOOGLE_DOC_PREFIX = "https://docs.google.com/document/"
 GOOGLE_DOC_EXPORT_TEMPLATE = (
     "https://docs.google.com/document/u/1/export?format=txt&id={}"
 )
+
+CLIENT_NAME = "secure-internal-links"
+AUTH_SECRET = os.getenv("AUTH_SECRET")  # needed for 61A Auth
+ACCESS_SECRET = os.getenv("ACCESS_SECRET")  # users need this to access it
+WORKER_SECRET = os.getenv("WORKER_SECRET")  # needed to communicate with the search-worker
 
 app = Flask(__name__, static_folder="")
 
@@ -34,10 +39,19 @@ def search_css():
     return app.send_static_file("search.css")
 
 
-def do(path, *, secret, data={}):
+def do(path, data={}):
     requests.post(
-        "{}/{}".format(SEARCH_DOMAIN, path), json={**data, "secret": secret}
+        "{}/{}".format(SEARCH_DOMAIN, path), json={**data, "secret": WORKER_SECRET}
     ).raise_for_status()
+
+
+def secure(route):
+    @functools.wraps(route)
+    def wrapped(*args, **kwargs):
+        if request.json["SECRET"] != ACCESS_SECRET:
+            abort(401)
+        return route(*args, **kwargs)
+    return wrapped
 
 
 def make_worker_group():
@@ -70,17 +84,22 @@ resource_worker = make_worker_group()
 
 
 @piazza_worker
-def upload_piazza(username, password, course_id, secret):
+def upload_piazza():
     print("Starting to scrape Piazza")
-    p = Piazza()
-    p.user_login(username, password)
 
-    course = p.network(course_id)
+    feed = requests.post("https://auth.apps.cs61a.org/piazza/get_feed", json={
+        "limit": 10000,
+        "client_name": CLIENT_NAME,
+        "secret": AUTH_SECRET,
+        "staff": False,
+    }).json()["feed"]
 
-    do("clear/piazza", secret=secret)
+    course_id = requests.post("https://auth.apps.cs61a.org/piazza/course_id").json()
+
+    do("clear/piazza")
 
     posts = []
-    for post in course.get_feed(10000)["feed"]:
+    for post in feed:
         if post["status"] == "private":
             continue
 
@@ -103,12 +122,12 @@ def upload_piazza(username, password, course_id, secret):
 
         posts.append(indexedPost)
 
-    do("insert/piazza", data={"data": posts}, secret=secret)
+    do("insert/piazza", {"data": posts})
     print("Piazza scraping completed")
 
 
 @resource_worker
-def scrape_and_upload_resources(resources, secret):
+def scrape_and_upload_resources(resources):
     print("Starting to scrape resource batch")
     buffer = []
     buffer_length = 0
@@ -162,7 +181,7 @@ def scrape_and_upload_resources(resources, secret):
         buffer.append(resource)
 
         if buffer_length > 10 ** 5 or resource == resources[-1]:
-            do("insert/resources", data={"resources": buffer}, secret=secret)
+            do("insert/resources", {"resources": buffer})
             buffer = []
             buffer_length = 0
 
@@ -170,32 +189,30 @@ def scrape_and_upload_resources(resources, secret):
 
 
 @resource_worker
-def clear_worker(secret):
-    do("clear/resources", secret=secret)
+def clear_worker():
+    do("clear/resources")
 
 
 @app.route("/api/index_piazza", methods=["POST"])
+@secure
 def index_piazza():
-    username = request.json["username"]
-    password = request.json["password"]
-    course = request.json["course"]
     secret = request.json["secret"]
-    upload_piazza(username, password, course, secret)
+    upload_piazza(secret)
     return jsonify({"success": True})
 
 
 @app.route("/api/clear_resources", methods=["POST"])
+@secure
 def clear_resources():
-    secret = request.json["secret"]
-    clear_worker(secret)
+    clear_worker()
     return jsonify({"success": True})
 
 
 @app.route("/api/upload_resources", methods=["POST"])
+@secure
 def upload_resources():
     resources = request.json["resources"]
-    secret = request.json["secret"]
-    scrape_and_upload_resources(resources, secret=secret)
+    scrape_and_upload_resources(resources)
     return jsonify({"success": True})
 
 
