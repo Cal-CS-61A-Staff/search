@@ -154,9 +154,9 @@ def scrape_and_upload_resources(resources, secret):
             except PdfReadError:
                 continue
 
-        resource.pop("html_content")
-        resource.pop("pdf_content")
-        resource.pop("links")
+        resource.pop("html_content", None)
+        resource.pop("pdf_content", None)
+        resource.pop("links", None)
 
         buffer_length += sum(map(len, content))
         buffer.append(resource)
